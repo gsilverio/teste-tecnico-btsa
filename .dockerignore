@@ -1,0 +1,9 @@
+.git
+.vs
+.env*
+**/bin/
+**/obj/
+**/TestResults/
+**/.vs/
+tt-btsa-webapp/node_modules/
+tt-btsa-webapp/dist/

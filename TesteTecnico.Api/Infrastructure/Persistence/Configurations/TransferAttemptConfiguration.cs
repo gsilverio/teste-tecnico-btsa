@@ -1,0 +1,27 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using TesteTecnico.Api.Domain.Accounts;
+using TesteTecnico.Api.Domain.Transfers;
+
+namespace TesteTecnico.Api.Infrastructure.Persistence.Configurations;
+
+/// <summary>Mapeamento dos registros de tentativas de transferência.</summary>
+public sealed class TransferAttemptConfiguration : IEntityTypeConfiguration<TransferAttempt>
+{
+    /// <inheritdoc />
+    public void Configure(EntityTypeBuilder<TransferAttempt> builder)
+    {
+        builder.ToTable("transfer_attempts");
+        builder.HasKey(attempt => attempt.Id);
+        builder.HasIndex(attempt => attempt.TransferId).IsUnique();
+        builder.HasIndex(attempt => new { attempt.SourceAccountId, attempt.AttemptedAt });
+        builder.HasOne<Transfer>()
+            .WithOne()
+            .HasForeignKey<TransferAttempt>(attempt => attempt.TransferId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Account>()
+            .WithMany()
+            .HasForeignKey(attempt => attempt.SourceAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
