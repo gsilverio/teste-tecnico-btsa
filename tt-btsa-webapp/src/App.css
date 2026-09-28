@@ -270,6 +270,22 @@
 .account-details-state { display: grid; justify-items: center; gap: 11px; margin-top: 28px; padding: 28px 16px; border: 1px solid #eff0f4; border-radius: 10px; color: #737b8c; font-size: 11px; text-align: center; }
 .account-details-state .button-spinner { border-color: #ded9f9; border-top-color: #6349dc; }
 .account-details-state p { margin: 0; color: #8c5260; }
+.account-transfers { margin-top: 20px; padding-top: 17px; border-top: 1px solid #eff0f4; }
+.account-transfers-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.account-transfers h3 { margin: 0; color: #394253; font-size: 11px; }
+.account-transfers-heading > span,.account-transfers > p { color: #858c9b; font-size: 10px; }
+.account-transfers-list { margin: 9px 0 0; padding: 0; list-style: none; }
+.account-transfers-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid #eff0f4; }
+.account-transfer-main { display: grid; min-width: 0; gap: 4px; }
+.account-transfer-main strong { color: #394253; font-size: 10px; }
+.account-transfer-main span { color: #858c9b; font-size: 9px; }
+.account-transfer-actions { display: grid; flex: 0 0 auto; justify-items: end; gap: 6px; }
+.account-transfers-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.account-transfers-error p { color: #a34848; font-size: 10px; }
+.account-transfers-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 0; border-top: 1px solid #eff0f4; }
+.account-transfers-pagination span { color: #858c9b; font-size: 9px; }
+.account-transfers-pagination .button { min-height: 27px; padding: 0 8px; font-size: 9px; }
+@media (max-width: 640px) { .account-transfers-list li { align-items: flex-start; }.account-transfer-actions { align-self: center; } }
 .transfer-audit-card { margin-top: 13px; }
 .transfer-audit-list { display: grid; gap: 0; margin: 0; padding: 5px 0 0; list-style: none; }
 .transfer-audit-list li { display: grid; grid-template-columns: 9px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 12px 0; border-bottom: 1px solid #f1f2f5; }

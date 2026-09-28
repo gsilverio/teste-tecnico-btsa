@@ -6,11 +6,11 @@ import { TransfersPage } from './pages/TransfersPage'
 type Page =
   | { kind: 'accounts' }
   | { kind: 'transfers' }
-  | { kind: 'transfer-details'; transferId: string }
+  | { kind: 'transfer-details'; transferId: string; from: 'accounts' | 'transfers' }
 
 function readPage(): Page {
-  const detailMatch = window.location.hash.match(/^#transferencias\/([0-9a-f-]+)$/i)
-  if (detailMatch) return { kind: 'transfer-details', transferId: detailMatch[1] }
+  const detailMatch = window.location.hash.match(/^#transferencias\/([0-9a-f-]+)(\?from=accounts)?$/i)
+  if (detailMatch) return { kind: 'transfer-details', transferId: detailMatch[1], from: detailMatch[2] ? 'accounts' : 'transfers' }
   return window.location.hash.startsWith('#transferencias') ? { kind: 'transfers' } : { kind: 'accounts' }
 }
 
@@ -29,17 +29,17 @@ export default function App() {
     setPage(nextPage === 'transfers' ? { kind: 'transfers' } : { kind: 'accounts' })
   }
 
-  const openTransfer = (transferId: string) => {
-    const nextPage: Page = { kind: 'transfer-details', transferId }
-    window.location.hash = `#transferencias/${transferId}`
+  const openTransfer = (transferId: string, from: 'accounts' | 'transfers' = 'transfers') => {
+    const nextPage: Page = { kind: 'transfer-details', transferId, from }
+    window.location.hash = `#transferencias/${transferId}${from === 'accounts' ? '?from=accounts' : ''}`
     setPage(nextPage)
   }
 
   if (page.kind === 'transfer-details') {
-    return <TransferDetailsPage key={page.transferId} transferId={page.transferId} onBack={() => navigate('transfers')} onNavigate={navigate} />
+    return <TransferDetailsPage key={page.transferId} transferId={page.transferId} onBack={() => navigate(page.from)} backLabel={page.from === 'accounts' ? 'Voltar às contas' : 'Voltar às transferências'} onNavigate={navigate} />
   }
 
   return page.kind === 'transfers'
     ? <TransfersPage onNavigate={navigate} onOpenTransfer={openTransfer} />
-    : <AccountsDashboardPage onNavigate={navigate} />
+    : <AccountsDashboardPage onNavigate={navigate} onOpenTransfer={(transferId) => openTransfer(transferId, 'accounts')} />
 }

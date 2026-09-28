@@ -184,37 +184,26 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
     }
 
     [PostgreSqlFact]
-    public async Task AccountHolderCanOwnAccountsAtMoreThanOneBankProduct()
+    public async Task AccountHolderCannotOwnASecondAccountEvenAtAnotherBank()
     {
         await fixture.ResetAsync();
         var accounts = await CreateAccountsAsync(500m, 100m);
         await using var dbContext = fixture.CreateDbContext();
-        var primary = await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Source);
+        var primary = await dbContext.Accounts.AsNoTracking().SingleAsync(account => account.Id == accounts.Source);
         var anotherBank = Bank.Create("Outro banco de teste", "87654321").Value;
         var anotherAccount = Account.Open(
-            primary.OwnerId,
-            anotherBank.Id,
-            BankAccountType.Savings,
-            "0001",
-            "00000009",
-            "0").Value;
-        var independentPolicy = TransferLimitPolicy.Create(anotherAccount.Id, 250m, 2, 75m, 1).Value;
-        dbContext.AddRange(anotherBank, anotherAccount, independentPolicy);
-        await dbContext.SaveChangesAsync();
+            primary.OwnerId, anotherBank.Id, BankAccountType.Savings, "0001", "00000009", "0").Value;
+        dbContext.AddRange(anotherBank, anotherAccount);
 
-        var ownerAccounts = await dbContext.Accounts
-            .Where(account => account.OwnerId == primary.OwnerId)
-            .ToListAsync();
-        Assert.Equal(2, ownerAccounts.Count);
-        Assert.Equal(2, ownerAccounts.Select(account => account.BankId).Distinct().Count());
-        var ownerAccountIds = ownerAccounts.Select(account => account.Id).ToHashSet();
-        var ownerPolicies = await dbContext.TransferLimitPolicies
-            .Where(policy => ownerAccountIds.Contains(policy.AccountId))
-            .ToListAsync();
-        Assert.Equal(2, ownerPolicies.Count);
-        Assert.Equal(2, ownerPolicies.Select(policy => policy.AccountId).Distinct().Count());
-        Assert.Contains(ownerPolicies, policy => policy.AccountId == anotherAccount.Id && policy.DayMaximumAmount == 250m);
-        Assert.Equal("00000000191", (await dbContext.AccountHolders.SingleAsync(holder => holder.Id == primary.OwnerId)).Cpf);
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => dbContext.SaveChangesAsync());
+        var postgres = Assert.IsType<Npgsql.PostgresException>(exception.InnerException);
+        Assert.Equal(Npgsql.PostgresErrorCodes.UniqueViolation, postgres.SqlState);
+        Assert.Equal("IX_accounts_OwnerId", postgres.ConstraintName);
+
+        await using var verification = fixture.CreateDbContext();
+        Assert.Equal(1, await verification.Accounts.CountAsync(account => account.OwnerId == primary.OwnerId));
+        Assert.Equal(500m, (await verification.Accounts.SingleAsync(account => account.Id == accounts.Source)).Balance);
+        Assert.Equal(100m, (await verification.Accounts.SingleAsync(account => account.Id == accounts.Destination)).Balance);
     }
 
     [PostgreSqlFact]

@@ -1,5 +1,5 @@
 import { http } from './http'
-import type { AcceptedTransfer, Transfer, TransferRequest } from '../types/transfer'
+import type { AcceptedTransfer, AccountTransferPage, Transfer, TransferRequest } from '../types/transfer'
 
 export const transfersService = {
   async request(values: TransferRequest, idempotencyKey: string) {
@@ -19,6 +19,14 @@ export const transfersService = {
 
   async get(transferId: string) {
     const response = await http.get<Transfer>(`/transfers/${transferId}`)
+    return response.data
+  },
+
+  async listByAccount(accountId: string, page = 1, signal?: AbortSignal) {
+    const response = await http.get<AccountTransferPage>(`/accounts/${accountId}/transfers`, {
+      params: { page, pageSize: 10 },
+      signal,
+    })
     return response.data
   },
 

@@ -36,6 +36,28 @@ export interface Transfer {
   isInDeadLetter?: boolean
 }
 
+export interface AccountTransferSummary {
+  id: string
+  sourceAccountId: string
+  destinationAccountId: string
+  amount: number
+  method: TransferMethod
+  status: string
+  createdAt: string
+  scheduledAt: string | null
+  failureCode: string | null
+}
+
+export interface AccountTransferPage {
+  items: AccountTransferSummary[]
+  page: number
+  pageSize: number
+  totalCount: number
+  totalPages: number
+  hasPreviousPage: boolean
+  hasNextPage: boolean
+}
+
 export interface TransferAuditEvent {
   id: string
   action: string

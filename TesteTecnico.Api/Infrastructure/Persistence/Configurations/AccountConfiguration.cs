@@ -34,11 +34,11 @@ public sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<AccountHolder>()
-            .WithMany()
-            .HasForeignKey(account => account.OwnerId)
+            .WithOne()
+            .HasForeignKey<Account>(account => account.OwnerId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasIndex(account => account.OwnerId);
+        builder.HasIndex(account => account.OwnerId).IsUnique();
         builder.HasIndex(account => new { account.BankId, account.Branch, account.Number }).IsUnique();
 
         builder.OwnsMany(account => account.PixKeys, pixKey =>

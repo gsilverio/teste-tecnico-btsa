@@ -13,10 +13,11 @@ import '../App.css'
 interface TransferDetailsPageProps {
   transferId: string
   onBack: () => void
+  backLabel?: string
   onNavigate: (page: 'accounts' | 'transfers') => void
 }
 
-export function TransferDetailsPage({ transferId, onBack, onNavigate }: TransferDetailsPageProps) {
+export function TransferDetailsPage({ transferId, onBack, backLabel = 'Voltar às transferências', onNavigate }: TransferDetailsPageProps) {
   const [transfer, setTransfer] = useState<Transfer | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -86,7 +87,7 @@ export function TransferDetailsPage({ transferId, onBack, onNavigate }: Transfer
         <AppTopbar apiAvailable={apiAvailable} title="Detalhes da transferência" />
         <div className="page-content transfer-page-content detail-page-content">
           <div className="detail-page-toolbar">
-            <button className="button button-quiet" type="button" onClick={onBack}><Icon name="chevron" /> Voltar às transferências</button>
+            <button className="button button-quiet" type="button" onClick={onBack}><Icon name="chevron" /> {backLabel}</button>
             <span className="detail-refresh-note"><span className="live-indicator" /> Atualiza enquanto estiver em processamento</span>
           </div>
 

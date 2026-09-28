@@ -13,7 +13,7 @@ import { SummaryCard } from '../components/SummaryCard'
 import { Icon } from '../components/Icon'
 import '../App.css'
 
-export function AccountsDashboardPage({ onNavigate }: { onNavigate: (page: 'accounts' | 'transfers') => void }) {
+export function AccountsDashboardPage({ onNavigate, onOpenTransfer }: { onNavigate: (page: 'accounts' | 'transfers') => void; onOpenTransfer: (transferId: string) => void }) {
   const dashboard = useDashboard()
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [editingOverdraftAccount, setEditingOverdraftAccount] = useState<Account | null>(null)
@@ -130,7 +130,7 @@ export function AccountsDashboardPage({ onNavigate }: { onNavigate: (page: 'acco
       {editingAccount && <PolicyEditor account={editingAccount} policy={editingPolicy} isSaving={dashboard.isSaving} error={dashboard.actionError} onClose={closePolicyEditor} onSave={savePolicy} onDelete={editingPolicy ? deletePolicy : undefined} />}
       {editingOverdraftAccount && <OverdraftEditor account={editingOverdraftAccount} isSaving={dashboard.isSaving} error={dashboard.actionError} onClose={closeOverdraftEditor} onSave={saveOverdraft} onClear={clearOverdraft} />}
       {editingStatusAccount && <AccountStatusEditor account={editingStatusAccount} isSaving={dashboard.isSaving} error={dashboard.actionError} onClose={() => { setEditingStatusAccount(null); dashboard.clearActionError() }} onSave={saveAccountStatus} />}
-      {viewingAccountId && <AccountDetailsDialog accountId={viewingAccountId} onClose={() => setViewingAccountId(null)} />}
+      {viewingAccountId && <AccountDetailsDialog accountId={viewingAccountId} onClose={() => setViewingAccountId(null)} onOpenTransfer={onOpenTransfer} />}
     </div>
   )
 }

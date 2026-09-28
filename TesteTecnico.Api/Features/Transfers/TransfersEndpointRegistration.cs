@@ -1,5 +1,6 @@
 using TesteTecnico.Api.Features.Transfers.CancelTransfer;
 using TesteTecnico.Api.Features.Transfers.GetTransfer;
+using TesteTecnico.Api.Features.Transfers.ListAccountTransfers;
 using TesteTecnico.Api.Features.Transfers.RequestTransfer;
 
 namespace TesteTecnico.Api.Features.Transfers;
@@ -11,5 +12,6 @@ public static class TransfersEndpointRegistration
     public static RouteGroupBuilder MapTransferEndpoints(this RouteGroupBuilder group) =>
         group.MapRequestTransferEndpoints()
             .MapGetTransferEndpoints()
+            .MapListAccountTransfersEndpoints()
             .MapCancelTransferEndpoints();
 }

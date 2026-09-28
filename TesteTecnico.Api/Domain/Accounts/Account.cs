@@ -36,7 +36,7 @@ public sealed class Account
     /// <summary>Identificador único da conta no sistema.</summary>
     public Guid Id { get; private set; }
 
-    /// <summary>Identificador do titular; os dados cadastrais da pessoa ficam fora deste domínio.</summary>
+    /// <summary>Identificador do titular único desta conta; um titular não pode possuir outra conta.</summary>
     public Guid OwnerId { get; private set; }
 
     /// <summary>Identificador do banco cadastrado no sistema.</summary>

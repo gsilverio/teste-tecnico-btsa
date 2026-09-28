@@ -10,6 +10,7 @@ using TesteTecnico.Api.Features.TransferLimits.UpdatePolicy;
 using TesteTecnico.Api.Features.Transfers.CancelTransfer;
 using TesteTecnico.Api.Features.Transfers.ExecuteTransfer;
 using TesteTecnico.Api.Features.Transfers.GetTransfer;
+using TesteTecnico.Api.Features.Transfers.ListAccountTransfers;
 using TesteTecnico.Api.Features.Transfers.RequestTransfer;
 using TesteTecnico.Api.Features.Transfers.Shared;
 
@@ -33,6 +34,7 @@ public static class FeatureServiceCollectionExtensions
         services.AddScoped<DeleteTransferLimitPolicyCommandHandler>();
         services.AddScoped<RequestTransferCommandHandler>();
         services.AddScoped<GetTransferQueryHandler>();
+        services.AddScoped<ListAccountTransfersQueryHandler>();
         services.AddScoped<CancelTransferCommandHandler>();
         services.AddScoped<ExecuteTransferCommandHandler>();
         services.AddScoped<TransferLimitEvaluator>();
