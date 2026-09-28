@@ -90,6 +90,30 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         Assert.Equal(1, await dbContext.TransferAttempts.CountAsync());
     }
 
+    [PostgreSqlTheory]
+    [InlineData(15, 1000, "Completed", -500, 2000)]
+    [InlineData(1, 1000, "Failed", 1500, 0)]
+    [InlineData(1, 2000, "Completed", -500, 2000)]
+    public async Task ExactOverdraftBoundary_RespectsHourlyPolicy(
+        int utcHour, int nightLimit, string expectedStatus, int sourceBalance, int destinationBalance)
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(1500m, 0m, overdraftLimit: 500m, nightMaximumAmount: nightLimit);
+        await using var dbContext = fixture.CreateDbContext();
+        var instant = new DateTimeOffset(2026, 9, 28, utcHour, 12, 0, TimeSpan.Zero);
+        var result = await CreateRequestHandler(dbContext, instant).HandleAsync(
+            new TransferRequest(accounts.Source, "BankAccount", 2000m,
+                BankIspb: "12345678", Branch: "0001", AccountNumber: "00000002", CheckDigit: "0"),
+            "exact-overdraft-boundary", false, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(expectedStatus, result.Value.Status);
+        Assert.Equal(expectedStatus == "Failed" ? "transfer.amount_limit_exceeded" : null, result.Value.FailureCode);
+        Assert.Equal((decimal)sourceBalance, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Source)).Balance);
+        Assert.Equal((decimal)destinationBalance, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Destination)).Balance);
+        Assert.Equal(1, await dbContext.TransferAttempts.CountAsync());
+    }
+
     [PostgreSqlFact]
     public async Task InsufficientFunds_FailsWithoutPartialMovementAndStillRecordsAttempt()
     {

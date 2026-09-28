@@ -393,8 +393,9 @@ function accountStatusLabel(status: string) {
 function failureLabel(code: string) {
   const labels: Record<string, string> = {
     'transfer.limit_policy_missing': 'Conta sem política de limites.',
-    'transfer.attempt_limit_exceeded': 'Limite de tentativas excedido.',
-    'transfer.amount_limit_exceeded': 'Limite de valor excedido.',
+    'transfer.attempt_limit_exceeded': 'Esta conta atingiu o limite de tentativas de transferência na última hora para o período atual (dia ou noite). Tentativas recusadas também contam. Aguarde as tentativas anteriores saírem dessa janela antes de tentar novamente ou ajuste os limites da conta.',
+    'transfer.amount_limit_exceeded': 'Limite de transferência por hora excedido para o período diurno ou noturno. Confira a política da conta; saldo e cheque especial são avaliados separadamente.',
+    'account.insufficient_funds': 'Saldo e cheque especial insuficientes.',
     'account.source_blocked': 'A conta de origem está bloqueada.',
     'account.source_inactive': 'A conta de origem está inativa.',
     'account.destination_blocked': 'A conta de destino está bloqueada.',
