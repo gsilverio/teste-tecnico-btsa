@@ -9,7 +9,9 @@ public static class ErrorHttpResultExtensions
     /// <summary>Mapeia um erro de aplicação para seu status HTTP sem vazar detalhes internos.</summary>
     public static IResult ToHttpResult(this Error error, HttpContext httpContext)
     {
-        var statusCode = error.Code.EndsWith(".not_found", StringComparison.Ordinal)
+        var statusCode = error.Code == "transfer.attempt_limit_exceeded"
+            ? StatusCodes.Status429TooManyRequests
+            : error.Code.EndsWith(".not_found", StringComparison.Ordinal)
             ? StatusCodes.Status404NotFound
             : error.Code is "transfer_limit_policy.already_exists"
                 or "account.overdraft_below_balance"

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Account } from '../../types/account'
 import type { TransferLimitPolicy, TransferLimitPolicyValues } from '../../types/transfer-limit-policy'
-import { formatCurrency } from '../../services/currency'
+import { formatCurrency, parseMoney } from '../../services/currency'
 
 interface PolicyEditorProps {
   account: Account
@@ -109,13 +109,6 @@ export function PolicyEditor({ account, policy, isSaving, error, onClose, onSave
       </section>
     </div>
   )
-}
-
-function parseMoney(value: string): number | null {
-  const normalized = value.trim().replace(',', '.')
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) return null
-  const amount = Number(normalized)
-  return Number.isFinite(amount) && Number.isSafeInteger(amount * 100) ? amount : null
 }
 
 function parseAttempts(value: string): number | null {

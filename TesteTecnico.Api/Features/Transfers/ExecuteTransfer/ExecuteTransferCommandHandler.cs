@@ -13,6 +13,18 @@ public sealed class ExecuteTransferCommandHandler(
     TimeProvider timeProvider,
     ILogger<ExecuteTransferCommandHandler> logger)
 {
+    /// <summary>Obtém locks das contas em ordem determinística antes da inserção da transferência imediata.</summary>
+    public async Task LockAccountsAsync(Guid sourceAccountId, Guid destinationAccountId, CancellationToken cancellationToken)
+    {
+        await dbContext.Accounts.FromSqlInterpolated($"""
+                SELECT * FROM "accounts"
+                WHERE "Id" = {sourceAccountId} OR "Id" = {destinationAccountId}
+                ORDER BY "Id"
+                FOR UPDATE
+                """)
+            .ToListAsync(cancellationToken);
+    }
+
     /// <summary>Aplica saldo, limites e estado terminal dentro de uma única transação PostgreSQL.</summary>
     public async Task HandleAsync(Guid transferId, CancellationToken cancellationToken)
     {
@@ -30,13 +42,7 @@ public sealed class ExecuteTransferCommandHandler(
             : null;
 
         // Lock both accounts in a stable order so opposite-direction transfers cannot deadlock.
-        var accounts = await dbContext.Accounts.FromSqlInterpolated($"""
-                SELECT * FROM "accounts"
-                WHERE "Id" = {snapshot.SourceAccountId} OR "Id" = {snapshot.DestinationAccountId}
-                ORDER BY "Id"
-                FOR UPDATE
-                """)
-            .ToListAsync(cancellationToken);
+        var accounts = await LockAndLoadAccountsAsync(snapshot.SourceAccountId, snapshot.DestinationAccountId, cancellationToken);
 
         var transfer = await dbContext.Transfers.FromSqlInterpolated($"SELECT * FROM \"transfers\" WHERE \"Id\" = {transferId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
@@ -71,7 +77,6 @@ public sealed class ExecuteTransferCommandHandler(
             {
                 await transaction.CommitAsync(cancellationToken);
             }
-
             return;
         }
 
@@ -96,6 +101,7 @@ public sealed class ExecuteTransferCommandHandler(
             if (transaction is not null)
             {
                 await transaction.CommitAsync(cancellationToken);
+                TransferMetrics.RecordOutcome("business_rejected");
             }
 
             logger.LogInformation(
@@ -122,9 +128,19 @@ public sealed class ExecuteTransferCommandHandler(
         if (transaction is not null)
         {
             await transaction.CommitAsync(cancellationToken);
+            TransferMetrics.RecordOutcome("completed");
         }
         logger.LogInformation("Transfer {TransferId} completed with amount {Amount}", transfer.Id, transfer.Amount);
     }
+
+    private async Task<List<Account>> LockAndLoadAccountsAsync(Guid sourceAccountId, Guid destinationAccountId, CancellationToken cancellationToken) =>
+        await dbContext.Accounts.FromSqlInterpolated($"""
+                SELECT * FROM "accounts"
+                WHERE "Id" = {sourceAccountId} OR "Id" = {destinationAccountId}
+                ORDER BY "Id"
+                FOR UPDATE
+                """)
+            .ToListAsync(cancellationToken);
 
     private async Task<string?> EvaluateBusinessRulesAsync(
         Account source,
@@ -182,4 +198,8 @@ public sealed class ExecuteTransferCommandHandler(
 
 /// <summary>Indica que uma mensagem agendada chegou à fila antes do horário persistido.</summary>
 public sealed class TransferNotReadyException(Guid transferId, DateTimeOffset? scheduledAt)
-    : InvalidOperationException($"A transferência {transferId} está disponível a partir de {scheduledAt:O}.");
+    : InvalidOperationException($"A transferência {transferId} está disponível a partir de {scheduledAt:O}.")
+{
+    /// <summary>Instante persistido em que a transferência se torna executável.</summary>
+    public DateTimeOffset? ScheduledAt { get; } = scheduledAt;
+}

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { AppSidebar } from '../components/layout/AppSidebar'
 import { AppTopbar } from '../components/layout/AppTopbar'
 import { Icon } from '../components/Icon'
 import { ApiError } from '../services/http'
 import { accountsService } from '../services/accounts.service'
 import { transfersService } from '../services/transfers.service'
-import { formatCurrency } from '../services/currency'
+import { formatCurrency, parseMoney } from '../services/currency'
 import type { Account } from '../types/account'
 import type { Transfer, TransferMethod, TransferRequest } from '../types/transfer'
 import '../App.css'
@@ -43,6 +43,19 @@ export function TransfersPage({ onNavigate, onOpenTransfer }: {
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const idempotencyKeyRef = useRef<{ fingerprint: string; key: string } | null>(null)
+  const refreshedCompletions = useRef(new Set<string>())
+
+  const refreshAccounts = useCallback(async () => {
+    try {
+      const page = await accountsService.getAll()
+      setAccounts(page.items)
+      setAccountsError(null)
+      return true
+    } catch (error) {
+      setAccountsError(`Não foi possível atualizar os saldos. ${getErrorMessage(error)}`)
+      return false
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -74,6 +87,11 @@ export function TransfersPage({ onNavigate, onOpenTransfer }: {
       const results = await Promise.allSettled(trackedIds.map((id) => transfersService.get(id)))
       if (!active) return
       const received = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+      const completed = received.filter((transfer) => transfer.status === 'Completed' && !refreshedCompletions.current.has(transfer.id))
+      if (completed.length > 0 && await refreshAccounts()) {
+        completed.forEach((transfer) => refreshedCompletions.current.add(transfer.id))
+      }
+      if (!active) return
       setTransfers((current) => {
         const byId = new Map(current.map((transfer) => [transfer.id, transfer]))
         for (const transfer of received) byId.set(transfer.id, transfer)
@@ -94,7 +112,7 @@ export function TransfersPage({ onNavigate, onOpenTransfer }: {
     }
 
     return () => { active = false }
-  }, [trackedIds])
+  }, [trackedIds, refreshAccounts])
 
   const sourceAccount = accounts.find((account) => account.id === sourceAccountId)
   const destinationAccounts = accounts.filter((account) => account.id !== sourceAccountId)
@@ -126,12 +144,12 @@ export function TransfersPage({ onNavigate, onOpenTransfer }: {
     setFormError(null)
     setNotice(null)
 
-    const parsedAmount = Number(amount)
+    const parsedAmount = parseMoney(amount)
     if (!sourceAccountId) {
       setFormError('Selecione a conta de origem.')
       return
     }
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || Math.round(parsedAmount * 100) !== parsedAmount * 100) {
+    if (parsedAmount === null || parsedAmount <= 0) {
       setFormError('Informe um valor positivo com no máximo duas casas decimais.')
       return
     }
@@ -184,6 +202,7 @@ export function TransfersPage({ onNavigate, onOpenTransfer }: {
         if (completed.status === 'Completed') {
           setNotice(`Transferência concluída. ID ${completed.id}.`)
           setAmount('')
+          if (await refreshAccounts()) refreshedCompletions.current.add(completed.id)
         } else if (completed.status === 'Failed') {
           setFormError(`Transferência recusada: ${failureLabel(completed.failureCode ?? 'unknown')}`)
         } else {

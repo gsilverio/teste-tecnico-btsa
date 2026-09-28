@@ -16,6 +16,7 @@ using TesteTecnico.Api.Features.Transfers.ExecuteTransfer;
 using TesteTecnico.Api.Features.Transfers.RequestTransfer;
 using TesteTecnico.Api.Features.Transfers.Shared;
 using TesteTecnico.Api.Features.Accounts.ManageStatus;
+using TesteTecnico.Api.Features.Accounts.ManageOverdraft;
 using TesteTecnico.Api.Infrastructure.Persistence;
 using Xunit;
 
@@ -243,7 +244,7 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         await ProcessAsync(transferId, Daytime);
 
         await using var dbContext = fixture.CreateDbContext();
-        Assert.Equal(0m, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Destination)).Balance);
+        Assert.Equal(200m, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Destination)).Balance);
         Assert.Equal(0m, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Source)).Balance);
     }
 
@@ -321,6 +322,206 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
     }
 
     [PostgreSqlFact]
+    public async Task ConcurrentImmediateRequests_LockAccountsBeforeInsertingAndDoNotOverspend()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(100m, 0m);
+        var secondDestination = await CreateAdditionalAccountAsync("00000003");
+
+        var results = await Task.WhenAll(
+            RequestImmediateAsync(accounts.Source, "00000002", 80m, "concurrent-request-a"),
+            RequestImmediateAsync(accounts.Source, "00000003", 80m, "concurrent-request-b"));
+
+        await using var dbContext = fixture.CreateDbContext();
+        Assert.All(results, result => Assert.True(result.IsSuccess));
+        Assert.Equal(20m, (await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Source)).Balance);
+        Assert.Single(await dbContext.Transfers.Where(item => item.Status == TransferStatus.Completed).ToArrayAsync());
+        Assert.Single(await dbContext.Transfers.Where(item => item.Status == TransferStatus.Failed).ToArrayAsync());
+        Assert.Equal(2, await dbContext.TransferAttempts.CountAsync());
+        Assert.NotEqual(accounts.Destination, secondDestination);
+    }
+
+    [PostgreSqlFact]
+    public async Task ConcurrentRequestsWithSameKey_MoveMoneyOnlyOnce()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(500m, 0m);
+        var results = await Task.WhenAll(
+            RequestImmediateAsync(accounts.Source, "00000002", 100m, "same-key"),
+            RequestImmediateAsync(accounts.Source, "00000002", 100m, "same-key"));
+        Assert.All(results, result => Assert.True(result.IsSuccess));
+        Assert.Equal(results[0].Value.Id, results[1].Value.Id);
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.Transfers.CountAsync());
+        Assert.Equal(1, await db.TransferAttempts.CountAsync());
+        Assert.Equal(400m, (await db.Accounts.SingleAsync(x => x.Id == accounts.Source)).Balance);
+        Assert.Equal(100m, (await db.Accounts.SingleAsync(x => x.Id == accounts.Destination)).Balance);
+    }
+
+    [PostgreSqlFact]
+    public async Task OppositeDirectionRequests_PreserveBalancesWithoutDeadlock()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(500m, 500m);
+        await using (var setup = fixture.CreateDbContext())
+        {
+            setup.TransferLimitPolicies.Add(TransferLimitPolicy.Create(accounts.Destination, 5_000m, 5, 5_000m, 5).Value);
+            await setup.SaveChangesAsync();
+        }
+        var results = await Task.WhenAll(
+            RequestImmediateAsync(accounts.Source, "00000002", 100m, "forward"),
+            RequestImmediateAsync(accounts.Destination, "00000001", 150m, "backward"));
+        Assert.All(results, result => {
+            Assert.True(result.IsSuccess);
+            Assert.Equal("Completed", result.Value.Status);
+        });
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(550m, (await db.Accounts.SingleAsync(x => x.Id == accounts.Source)).Balance);
+        Assert.Equal(450m, (await db.Accounts.SingleAsync(x => x.Id == accounts.Destination)).Balance);
+    }
+
+    [PostgreSqlFact]
+    public async Task RejectedPreflightRequest_CountsOnceWhenIdempotencyKeyIsReplayed()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(500m, 0m);
+        await using var dbContext = fixture.CreateDbContext();
+        var handler = CreateRequestHandler(dbContext, Daytime);
+        var invalidRequest = new TransferRequest(
+            accounts.Source,
+            "BankAccount",
+            0m,
+            BankIspb: "12345678",
+            Branch: "0001",
+            AccountNumber: "00000002",
+            CheckDigit: "0");
+
+        var first = await handler.HandleAsync(invalidRequest, "invalid-amount-once", false, CancellationToken.None);
+        var replay = await handler.HandleAsync(invalidRequest, "invalid-amount-once", false, CancellationToken.None);
+
+        Assert.False(first.IsSuccess);
+        Assert.False(replay.IsSuccess);
+        Assert.Equal("transfer.invalid_amount", first.Error!.Code);
+        Assert.Equal(first.Error.Code, replay.Error!.Code);
+
+        var sameAccount = await handler.HandleAsync(invalidRequest with
+        {
+            Amount = 50m,
+            AccountNumber = "00000001"
+        }, null, false, CancellationToken.None);
+        var unknownDestination = await handler.HandleAsync(invalidRequest with
+        {
+            Amount = 50m,
+            AccountNumber = "99999999"
+        }, null, false, CancellationToken.None);
+
+        Assert.False(sameAccount.IsSuccess);
+        Assert.False(unknownDestination.IsSuccess);
+        Assert.Equal(3, await dbContext.TransferAttempts.CountAsync());
+        Assert.Equal(0, await dbContext.Transfers.CountAsync());
+    }
+
+    [PostgreSqlFact]
+    public async Task TransferAmountLimit_SumsCompletedTransfersAndIgnoresExpiredWindowEntries()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(10_000m, 0m, dayMaximumAmount: 5_000m);
+        var first = await CreateImmediateTransferAsync(accounts.Source, accounts.Destination, 3_000m, Daytime.AddMinutes(-61));
+        await ProcessAsync(first, Daytime.AddMinutes(-61));
+        var second = await CreateImmediateTransferAsync(accounts.Source, accounts.Destination, 3_000m, Daytime);
+        var thirdDestination = await CreateAdditionalAccountAsync("00000003");
+        var third = await CreateImmediateTransferAsync(accounts.Source, thirdDestination, 3_000m, Daytime);
+
+        await ProcessAsync(second, Daytime);
+        await ProcessAsync(third, Daytime);
+
+        await using var dbContext = fixture.CreateDbContext();
+        Assert.Equal(TransferStatus.Completed, (await dbContext.Transfers.SingleAsync(item => item.Id == second)).Status);
+        Assert.Equal(TransferStatus.Failed, (await dbContext.Transfers.SingleAsync(item => item.Id == third)).Status);
+        Assert.Equal("transfer.amount_limit_exceeded", (await dbContext.Transfers.SingleAsync(item => item.Id == third)).FailureCode);
+    }
+
+    [PostgreSqlTheory]
+    [InlineData(8, 59, TransferStatus.Failed)]
+    [InlineData(9, 0, TransferStatus.Completed)]
+    [InlineData(0, 59, TransferStatus.Completed)]
+    [InlineData(1, 0, TransferStatus.Failed)]
+    public async Task TransferLimit_UsesExpectedLocalDayAndNightBoundaries(int utcHour, int utcMinute, TransferStatus expected)
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(1_000m, 0m, nightMaximumAmount: 50m);
+        var instant = new DateTimeOffset(2026, 9, 27, utcHour, utcMinute, 0, TimeSpan.Zero);
+        var transferId = await CreateImmediateTransferAsync(accounts.Source, accounts.Destination, 100m, instant);
+
+        await ProcessAsync(transferId, instant);
+
+        await using var dbContext = fixture.CreateDbContext();
+        Assert.Equal(expected, (await dbContext.Transfers.SingleAsync(item => item.Id == transferId)).Status);
+    }
+
+    [PostgreSqlFact]
+    public async Task ScheduledRequest_ReplayedAfterDueTimeReturnsExistingTransfer()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(500m, 0m);
+        var scheduleAt = Daytime.AddMinutes(1);
+        var request = new TransferRequest(
+            accounts.Source,
+            "BankAccount",
+            100m,
+            BankIspb: "12345678",
+            Branch: "0001",
+            AccountNumber: "00000002",
+            CheckDigit: "0",
+            ScheduledAt: scheduleAt);
+        var jobClient = new RecordingBackgroundJobClient();
+
+        await using (var firstContext = fixture.CreateDbContext())
+        {
+            var first = await CreateRequestHandler(firstContext, Daytime, jobClient)
+                .HandleAsync(request, "scheduled-replay", true, CancellationToken.None);
+            Assert.True(first.IsSuccess);
+        }
+
+        await using (var changedContext = fixture.CreateDbContext())
+        {
+            var changed = await CreateRequestHandler(changedContext, scheduleAt.AddMinutes(1), jobClient)
+                .HandleAsync(request with { Amount = 100.001m }, "scheduled-replay", true, CancellationToken.None);
+
+            Assert.False(changed.IsSuccess);
+            Assert.Equal("transfer.idempotency_conflict", changed.Error!.Code);
+            Assert.Equal(1, await changedContext.Transfers.CountAsync());
+            Assert.Equal(0, await changedContext.TransferAttempts.CountAsync());
+        }
+
+        await using (var replayContext = fixture.CreateDbContext())
+        {
+            var replay = await CreateRequestHandler(replayContext, scheduleAt.AddMinutes(1), jobClient)
+                .HandleAsync(request, "scheduled-replay", true, CancellationToken.None);
+
+            Assert.True(replay.IsSuccess);
+            Assert.Equal("Scheduled", replay.Value.Status);
+            Assert.Equal(1, await replayContext.Transfers.CountAsync());
+            Assert.Equal(1, await replayContext.TransferOutboxMessages.CountAsync());
+        }
+    }
+
+    [PostgreSqlFact]
+    public async Task OverdraftUpdate_RacingWithTransferPreservesBalanceConstraint()
+    {
+        await fixture.ResetAsync();
+        var accounts = await CreateAccountsAsync(100m, 0m, overdraftLimit: 100m);
+
+        var transfer = RequestImmediateAsync(accounts.Source, "00000002", 150m, "overdraft-race");
+        var overdraftUpdate = SetOverdraftLimitAsync(accounts.Source, 0m);
+        await Task.WhenAll(transfer, overdraftUpdate);
+
+        await using var dbContext = fixture.CreateDbContext();
+        var source = await dbContext.Accounts.SingleAsync(account => account.Id == accounts.Source);
+        Assert.True(source.Balance >= -source.OverdraftLimit);
+    }
+
+    [PostgreSqlFact]
     public async Task RedeliveryOfCompletedTransfer_DoesNotMoveBalancesTwice()
     {
         await fixture.ResetAsync();
@@ -372,6 +573,7 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         decimal sourceBalance,
         decimal destinationBalance,
         decimal overdraftLimit = 0m,
+        decimal dayMaximumAmount = 5_000m,
         int dayMaximumAttempts = 5,
         decimal nightMaximumAmount = 1_000m,
         decimal destinationOverdraftLimit = 0m,
@@ -384,11 +586,11 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         var source = Account.Open(sourceHolder.Id, bank.Id, BankAccountType.Checking, "0001", "00000001", "0", overdraftLimit).Value;
         var destination = Account.Open(destinationHolder.Id, bank.Id, BankAccountType.Checking, "0001", "00000002", "0", destinationOverdraftLimit).Value;
         Assert.True(source.Credit(sourceBalance).IsSuccess);
-        if (destinationBalance >= 0m)
+        if (destinationBalance > 0m)
         {
             Assert.True(destination.Credit(destinationBalance).IsSuccess);
         }
-        else
+        else if (destinationBalance < 0m)
         {
             Assert.True(destination.Debit(-destinationBalance).IsSuccess);
         }
@@ -396,7 +598,7 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         SetStatus(source, sourceStatus);
         SetStatus(destination, destinationStatus);
 
-        var policy = TransferLimitPolicy.Create(source.Id, 5_000m, dayMaximumAttempts, nightMaximumAmount, 3).Value;
+        var policy = TransferLimitPolicy.Create(source.Id, dayMaximumAmount, dayMaximumAttempts, nightMaximumAmount, 3).Value;
         await using var dbContext = fixture.CreateDbContext();
         dbContext.AddRange(bank, sourceHolder, destinationHolder, source, destination, policy);
         await dbContext.SaveChangesAsync();
@@ -443,6 +645,35 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         await CreateExecutor(dbContext, now).HandleAsync(transferId, CancellationToken.None);
     }
 
+    private async Task<Result<TransferResponse>> RequestImmediateAsync(
+        Guid sourceId,
+        string destinationNumber,
+        decimal amount,
+        string idempotencyKey)
+    {
+        await using var dbContext = fixture.CreateDbContext();
+        var handler = CreateRequestHandler(dbContext, Daytime);
+        return await handler.HandleAsync(new TransferRequest(
+            sourceId,
+            "BankAccount",
+            amount,
+            BankIspb: "12345678",
+            Branch: "0001",
+            AccountNumber: destinationNumber,
+            CheckDigit: "0"), idempotencyKey, false, CancellationToken.None);
+    }
+
+    private static RequestTransferCommandHandler CreateRequestHandler(
+        AppDbContext dbContext,
+        DateTimeOffset now,
+        IBackgroundJobClient? backgroundJobClient = null) =>
+        new(
+            dbContext,
+            backgroundJobClient ?? new UnexpectedBackgroundJobClient(),
+            CreateExecutor(dbContext, now),
+            new FixedTimeProvider(now),
+            NullLogger<RequestTransferCommandHandler>.Instance);
+
     private static ExecuteTransferCommandHandler CreateExecutor(AppDbContext dbContext, DateTimeOffset now)
     {
         var evaluator = new TransferLimitEvaluator(dbContext, Options.Create(new TransferRulesOptions()));
@@ -483,6 +714,13 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
         Assert.True(result.IsSuccess);
     }
 
+    private async Task<Result<OverdraftLimitResponse>> SetOverdraftLimitAsync(Guid accountId, decimal limit)
+    {
+        await using var dbContext = fixture.CreateDbContext();
+        var handler = new SetOverdraftLimitCommandHandler(dbContext, NullLogger<SetOverdraftLimitCommandHandler>.Instance);
+        return await handler.HandleAsync(accountId, limit, CancellationToken.None);
+    }
+
     private sealed record AccountSet(Guid Source, Guid Destination);
 
     private sealed class UnexpectedBackgroundJobClient : IBackgroundJobClient
@@ -491,6 +729,15 @@ public sealed class TransferProcessingTests(PostgreSqlFixture fixture)
 
         public bool ChangeState(string jobId, IState state, string? expectedState) =>
             throw new InvalidOperationException("A transferência imediata não deve alterar um job do Hangfire.");
+    }
+
+    private sealed class RecordingBackgroundJobClient : IBackgroundJobClient
+    {
+        private int nextId;
+
+        public string Create(Job job, IState state) => Interlocked.Increment(ref nextId).ToString();
+
+        public bool ChangeState(string jobId, IState state, string? expectedState) => true;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

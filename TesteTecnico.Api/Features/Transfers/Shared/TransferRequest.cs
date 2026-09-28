@@ -32,7 +32,9 @@ public sealed record TransferResponse(
     DateTimeOffset? FinishedAt,
     DateTimeOffset? CancelledAt,
     string? FailureCode,
-    IReadOnlyList<TransferAuditEventResponse>? AuditTrail = null);
+    IReadOnlyList<TransferAuditEventResponse>? AuditTrail = null,
+    string? ProcessingError = null,
+    bool IsInDeadLetter = false);
 
 /// <summary>Fato persistido no histórico do ciclo de vida de uma transferência.</summary>
 public sealed record TransferAuditEventResponse(

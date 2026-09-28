@@ -21,6 +21,9 @@ services:
     image: rabbitmq:4-management-alpine
     env_file:
       - .env.dev
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER:-btsa}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:-btsa-local}"
     ports:
       - "${RABBITMQ_HOST_PORT:-5673}:5672"
       - "${RABBITMQ_MANAGEMENT_HOST_PORT:-15673}:15672"

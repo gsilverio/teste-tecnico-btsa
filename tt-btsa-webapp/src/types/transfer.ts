@@ -32,6 +32,8 @@ export interface Transfer {
   cancelledAt: string | null
   failureCode: string | null
   auditTrail?: TransferAuditEvent[] | null
+  processingError?: string | null
+  isInDeadLetter?: boolean
 }
 
 export interface TransferAuditEvent {

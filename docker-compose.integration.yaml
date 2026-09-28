@@ -1,0 +1,27 @@
+# Ambiente descartável: nunca compartilha volumes ou portas com desenvolvimento.
+# docker compose -p btsa-integration -f docker-compose.yaml -f docker-compose.integration.yaml up --build -d
+name: btsa-integration
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: btsa_e2e_test
+      POSTGRES_USER: btsa
+      POSTGRES_PASSWORD: btsa-test
+    ports: !override ["127.0.0.1:25432:5432"]
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER: btsa
+      RABBITMQ_DEFAULT_PASS: btsa-test
+    ports: !override ["127.0.0.1:35672:5672", "127.0.0.1:35673:15672"]
+  api:
+    environment:
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=btsa_e2e_test;Username=btsa;Password=btsa-test
+      RabbitMq__UserName: btsa
+      RabbitMq__Password: btsa-test
+    ports: !override ["127.0.0.1:25154:8080"]
+  frontend:
+    ports: !override ["127.0.0.1:23001:80"]
+  grafana:
+    ports: !override ["127.0.0.1:23300:3000"]
+  prometheus:
+    ports: !override ["127.0.0.1:29090:9090"]

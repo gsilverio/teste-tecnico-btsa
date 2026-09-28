@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using TesteTecnico.Api.Features.Transfers.ExecuteTransfer;
+using TesteTecnico.Api.Features.Transfers.Shared;
 
 namespace TesteTecnico.Api.Infrastructure.Messaging;
 
@@ -53,12 +55,24 @@ public sealed class TransferQueueConsumer(
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var handler = scope.ServiceProvider.GetRequiredService<ExecuteTransferCommandHandler>();
                 await handler.HandleAsync(message.TransferId, stoppingToken);
+                var dbContext = scope.ServiceProvider.GetRequiredService<TesteTecnico.Api.Infrastructure.Persistence.AppDbContext>();
+                var outboxMessage = await dbContext.TransferOutboxMessages
+                    .SingleOrDefaultAsync(item => item.TransferId == message.TransferId, stoppingToken);
+                if (outboxMessage is not null)
+                {
+                    outboxMessage.MarkProcessingSucceeded();
+                    await dbContext.SaveChangesAsync(stoppingToken);
+                }
+
                 await channel.BasicAckAsync(delivery.DeliveryTag, false, stoppingToken);
             }
             catch (TransferNotReadyException exception)
             {
                 logger.LogWarning(exception, "Transfer {TransferId} arrived before its scheduled time; retrying later", message.TransferId);
-                await RequeueAfterDelayAsync(channel, delivery.DeliveryTag, delivery.Body, retryCount, stoppingToken);
+                var delay = exception.ScheduledAt is { } scheduledAt
+                    ? TimeSpan.FromSeconds(Math.Clamp((scheduledAt - timeProvider.GetUtcNow()).TotalSeconds + 1, 1, 60))
+                    : TimeSpan.FromSeconds(2);
+                await RequeueAfterDelayAsync(channel, delivery.DeliveryTag, delivery.Body, message.TransferId, retryCount, null, stoppingToken, delay);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -67,7 +81,8 @@ public sealed class TransferQueueConsumer(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Transfer {TransferId} could not be processed; the message will be retried", message.TransferId);
-                await RequeueAfterDelayAsync(channel, delivery.DeliveryTag, delivery.Body, retryCount, stoppingToken);
+                var diagnostic = $"Falha técnica ({exception.GetType().Name}). Consulte os logs pelo TransferId para detalhes.";
+                await RequeueAfterDelayAsync(channel, delivery.DeliveryTag, delivery.Body, message.TransferId, retryCount, diagnostic, stoppingToken);
             }
         };
 
@@ -80,26 +95,46 @@ public sealed class TransferQueueConsumer(
         IChannel channel,
         ulong deliveryTag,
         ReadOnlyMemory<byte> body,
+        Guid transferId,
         int retryCount,
-        CancellationToken cancellationToken)
+        string? failureMessage,
+        CancellationToken cancellationToken,
+        TimeSpan? requestedDelay = null)
     {
         try
         {
-            if (retryCount >= MaximumProcessingRetries)
+            var deadLettered = failureMessage is not null && retryCount >= MaximumProcessingRetries;
+            if (failureMessage is not null)
+            {
+                try
+                {
+                    await PersistProcessingFailureAsync(transferId, retryCount + 1, failureMessage, deadLettered, cancellationToken);
+                    TransferMetrics.RecordQueueFailure(deadLettered);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogError(exception, "Could not persist retry state for transfer {TransferId}; keeping the message in RabbitMQ", transferId);
+                    await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
+                    await channel.BasicNackAsync(deliveryTag, false, true, cancellationToken);
+                    return;
+                }
+            }
+
+            if (deadLettered)
             {
                 logger.LogError("Transfer message exceeded {RetryCount} retries and will be moved to {DeadLetterQueue}", retryCount, TransferQueueNames.DeadLetter);
                 await channel.BasicNackAsync(deliveryTag, false, false, cancellationToken);
                 return;
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
+            await Task.Delay(requestedDelay ?? TimeSpan.FromSeconds(2), timeProvider, cancellationToken);
             var retryProperties = new BasicProperties
             {
                 Persistent = true,
                 ContentType = "application/json",
                 Headers = new Dictionary<string, object?>
                 {
-                    ["x-transfer-retries"] = retryCount + 1
+                    ["x-transfer-retries"] = retryCount + (failureMessage is null ? 0 : 1)
                 }
             };
             try
@@ -123,6 +158,26 @@ public sealed class TransferQueueConsumer(
         {
             // The unacknowledged delivery is returned to RabbitMQ when the channel closes.
         }
+    }
+
+    private async Task PersistProcessingFailureAsync(
+        Guid transferId,
+        int attempts,
+        string failureMessage,
+        bool deadLettered,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<TesteTecnico.Api.Infrastructure.Persistence.AppDbContext>();
+        var outboxMessage = await dbContext.TransferOutboxMessages
+            .SingleOrDefaultAsync(item => item.TransferId == transferId, cancellationToken);
+        if (outboxMessage is null)
+        {
+            return;
+        }
+
+        outboxMessage.RecordProcessingFailure(attempts, failureMessage, timeProvider.GetUtcNow(), deadLettered);
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static int ReadRetryCount(IDictionary<string, object?>? headers)

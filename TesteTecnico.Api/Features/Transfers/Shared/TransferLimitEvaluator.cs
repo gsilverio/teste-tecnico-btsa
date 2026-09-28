@@ -36,13 +36,15 @@ public sealed class TransferLimitEvaluator(
         var completedAmount = await dbContext.Transfers.AsNoTracking()
             .Where(transfer => transfer.SourceAccountId == sourceAccountId
                 && transfer.Status == TransferStatus.Completed
-                && transfer.FinishedAt >= windowStart)
+                && transfer.FinishedAt >= windowStart
+                && transfer.FinishedAt <= attemptedAt)
             .SumAsync(transfer => (decimal?)transfer.Amount, cancellationToken) ?? 0m;
 
         var attemptsInWindow = await dbContext.TransferAttempts.AsNoTracking()
             .CountAsync(attempt => attempt.SourceAccountId == sourceAccountId
                 && attempt.TransferId != transferId
-                && attempt.AttemptedAt >= windowStart,
+                && attempt.AttemptedAt >= windowStart
+                && attempt.AttemptedAt <= attemptedAt,
                 cancellationToken);
 
         if (attemptsInWindow + 1 > maximumAttempts)

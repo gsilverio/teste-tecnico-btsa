@@ -1,6 +1,9 @@
 import axios from 'axios'
 
-const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
+// VITE_API_BASE_URL is the complete API base path (for example `/api`).
+// Keeping the prefix in one place prevents Docker builds from producing `/api/api`.
+const baseUrl = (import.meta.env.VITE_API_BASE_URL?.trim() || '/api').replace(/\/$/, '')
+export const swaggerUrl = `${baseUrl.replace(/\/api$/, '')}/swagger`
 
 export class ApiError extends Error {
   readonly status: number
@@ -18,7 +21,7 @@ interface ProblemDetails {
 }
 
 export const http = axios.create({
-  baseURL: `${baseUrl}/api`,
+  baseURL: baseUrl,
   timeout: 15_000,
   headers: { Accept: 'application/json' },
 })

@@ -12,9 +12,11 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:3001`. `npm run dev` carrega `.env.dev`: `VITE_APP_BASE_URL` define o caminho-base do frontend e `VITE_API_PROXY_TARGET` indica para onde o Vite encaminha as chamadas `/api/*` durante o desenvolvimento. `VITE_API_BASE_URL` fica vazio nesse modo para o navegador usar URLs relativas e o proxy evitar CORS e problemas com o certificado HTTPS local. Em outra origem/produção, configure `VITE_API_BASE_URL` com a URL pública da API.
+Abra `http://localhost:3001`. `npm run dev` carrega `.env.dev`: `VITE_APP_BASE_URL` define o caminho-base do frontend e `VITE_API_PROXY_TARGET` indica para onde o Vite encaminha as chamadas `/api/*` durante o desenvolvimento. `VITE_API_BASE_URL` é o caminho-base completo da API e por padrão vale `/api`; assim, a chamada de contas sempre fica em `/api/accounts`. Para outra origem, configure o endereço completo incluindo o prefixo, por exemplo `https://api.exemplo.com/api`.
 
 ## Funcionalidades
+
+O link do Swagger usa a mesma origem configurada para a API. Vite e Nginx encaminham `/api`, `/swagger` e `/openapi`, inclusive quando o ambiente usa portas diferentes das de desenvolvimento.
 
 - Carrega `GET /api/accounts` e `GET /api/transfer-limit-policies`.
 - Cria políticas com `POST /api/transfer-limit-policies`, atualiza com `PUT /api/transfer-limit-policies/{policyId}` e remove com `DELETE /api/transfer-limit-policies/{policyId}`.
@@ -34,4 +36,5 @@ Abra `http://localhost:3001`. `npm run dev` carrega `.env.dev`: `VITE_APP_BASE_U
 ```powershell
 npm run build
 npm run lint
+npm test
 ```

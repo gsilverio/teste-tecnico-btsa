@@ -45,6 +45,11 @@ try
     });
 
     builder.Services.AddOpenApi();
+    builder.Services.AddProblemDetails(options =>
+    {
+        options.CustomizeProblemDetails = context =>
+            context.ProblemDetails.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
+    });
     builder.Services.AddFeatureHandlers();
     builder.Services.AddSingleton(TimeProvider.System);
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
@@ -81,6 +86,8 @@ try
     builder.Services.AddHostedService<TransferOutboxRecoveryService>();
 
     var app = builder.Build();
+
+    app.UseExceptionHandler();
 
     app.UseSerilogRequestLogging(options =>
     {
@@ -121,15 +128,42 @@ try
 
     app.UseHttpMetrics();
 
+    app.MapAllEndpoints();
+
+    app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Teste Técnico BTSA API v1");
+        options.RoutePrefix = "swagger";
+    });
+
+    app.MapGet("/health/live", () => Results.Ok(new { status = "Healthy" }))
+        .WithName("Liveness")
+        .ExcludeFromDescription();
+    app.MapGet("/health/ready", async (
+        AppDbContext dbContext,
+        RabbitMqConnection rabbitMq,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var databaseReady = await dbContext.Database.CanConnectAsync(cancellationToken);
+            var brokerReady = rabbitMq.Connection.IsOpen;
+            return databaseReady && brokerReady
+                ? Results.Ok(new { status = "Ready" })
+                : Results.Json(new { status = "Unavailable", databaseReady, brokerReady }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+        catch
+        {
+            return Results.Json(new { status = "Unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    })
+        .WithName("Readiness")
+        .ExcludeFromDescription();
+
     if (app.Environment.IsDevelopment())
     {
-        app.MapAllEndpoints();
-        app.MapOpenApi();
-        app.UseSwaggerUI(options =>
-        {
-            options.SwaggerEndpoint("/openapi/v1.json", "Teste Técnico BTSA API v1");
-            options.RoutePrefix = "swagger";
-        });
+        app.MapDevelopmentEndpoints();
         app.UseHangfireDashboard("/hangfire");
     }
 

@@ -101,7 +101,7 @@ public sealed class Transfer
         string? idempotencyKey = null,
         string? requestFingerprint = null)
     {
-        var validation = Validate(sourceAccountId, destinationAccountId, amount, method);
+        var validation = ValidateRequest(sourceAccountId, destinationAccountId, amount, method);
         validation ??= ValidateIdempotency(idempotencyKey, requestFingerprint);
         if (validation is not null)
         {
@@ -141,7 +141,7 @@ public sealed class Transfer
         string? idempotencyKey = null,
         string? requestFingerprint = null)
     {
-        var validation = Validate(sourceAccountId, destinationAccountId, amount, method);
+        var validation = ValidateRequest(sourceAccountId, destinationAccountId, amount, method);
         validation ??= ValidateIdempotency(idempotencyKey, requestFingerprint);
         if (validation is not null)
         {
@@ -250,7 +250,8 @@ public sealed class Transfer
         return ResultExtensions.Success();
     }
 
-    private static Error? Validate(Guid sourceAccountId, Guid destinationAccountId, decimal amount, TransferMethod method)
+    /// <summary>Valida os dados financeiros sem aplicar regras temporais de uma nova solicitação.</summary>
+    public static Error? ValidateRequest(Guid sourceAccountId, Guid destinationAccountId, decimal amount, TransferMethod method)
     {
         if (sourceAccountId == Guid.Empty || destinationAccountId == Guid.Empty || sourceAccountId == destinationAccountId)
         {

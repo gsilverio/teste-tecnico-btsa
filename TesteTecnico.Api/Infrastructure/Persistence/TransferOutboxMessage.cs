@@ -30,8 +30,33 @@ public sealed class TransferOutboxMessage
     /// <summary>Instante em que o broker confirmou a publicação.</summary>
     public DateTimeOffset? PublishedAt { get; private set; }
 
+    /// <summary>Quantidade de falhas técnicas de processamento da mensagem.</summary>
+    public int ProcessingAttempts { get; private set; }
+
+    /// <summary>Última falha técnica observada ao processar a transferência.</summary>
+    public string? LastProcessingError { get; private set; }
+
+    /// <summary>Instante em que a mensagem foi encaminhada à dead-letter queue.</summary>
+    public DateTimeOffset? DeadLetteredAt { get; private set; }
+
     /// <summary>Marca a mensagem como publicada após confirmação do RabbitMQ.</summary>
     public void MarkPublished(DateTimeOffset publishedAt) => PublishedAt = publishedAt.ToUniversalTime();
+
+    /// <summary>Registra falha de processamento e se o limite de retry foi esgotado.</summary>
+    public void RecordProcessingFailure(int attempts, string error, DateTimeOffset occurredAt, bool deadLettered)
+    {
+        ProcessingAttempts = Math.Max(ProcessingAttempts, attempts);
+        LastProcessingError = string.IsNullOrWhiteSpace(error) ? "Falha técnica sem detalhes." : error[..Math.Min(error.Length, 2048)];
+        DeadLetteredAt = deadLettered ? occurredAt.ToUniversalTime() : null;
+    }
+
+    /// <summary>Limpa o diagnóstico técnico quando a mensagem é processada com sucesso.</summary>
+    public void MarkProcessingSucceeded()
+    {
+        ProcessingAttempts = 0;
+        LastProcessingError = null;
+        DeadLetteredAt = null;
+    }
 
     /// <summary>Cria uma mensagem de outbox para despacho de uma transferência agendada.</summary>
     public static TransferOutboxMessage Create(Guid transferId, DateTimeOffset availableAt, DateTimeOffset createdAt)

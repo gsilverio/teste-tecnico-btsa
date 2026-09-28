@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Account } from '../../types/account'
-import { formatCurrency } from '../../services/currency'
+import { formatCurrency, parseMoney } from '../../services/currency'
 
 interface OverdraftEditorProps {
   account: Account
@@ -26,14 +26,9 @@ export function OverdraftEditor({ account, isSaving, error, onClose, onSave, onC
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const normalized = limit.trim().replace(',', '.')
-    if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
-      setValidationError('Informe um valor igual ou maior que zero, com até duas casas decimais.')
-      return
-    }
-    const value = Number(normalized)
-    if (!Number.isFinite(value) || !Number.isSafeInteger(value * 100)) {
-      setValidationError('O valor informado está fora do intervalo suportado pela tela.')
+    const value = parseMoney(limit)
+    if (value === null) {
+      setValidationError('Informe um valor igual ou maior que zero, com até duas casas decimais e dentro do intervalo suportado.')
       return
     }
     setValidationError(null)

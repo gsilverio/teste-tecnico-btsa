@@ -10,8 +10,10 @@ public sealed class TransferOutboxMessageConfiguration : IEntityTypeConfiguratio
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<TransferOutboxMessage> builder)
     {
-        builder.ToTable("transfer_outbox_messages");
+        builder.ToTable("transfer_outbox_messages", table =>
+            table.HasCheckConstraint("ck_transfer_outbox_processing_attempts_nonnegative", "\"ProcessingAttempts\" >= 0"));
         builder.HasKey(message => message.Id);
+        builder.Property(message => message.LastProcessingError).HasMaxLength(2048);
         builder.HasIndex(message => message.TransferId).IsUnique();
         builder.HasIndex(message => new { message.PublishedAt, message.AvailableAt });
         builder.HasOne<Transfer>()

@@ -43,6 +43,10 @@ public sealed class GetTransferQueryHandler(AppDbContext dbContext)
             entry.Status!.Value.ToString(),
             entry.OccurredAt,
             entry.ErrorMessage)).ToArray();
+        var dispatchState = await dbContext.TransferOutboxMessages.AsNoTracking()
+            .Where(message => message.TransferId == transferId)
+            .Select(message => new { message.LastProcessingError, message.DeadLetteredAt })
+            .SingleOrDefaultAsync(cancellationToken);
 
         return Result<TransferResponse>.Success(new TransferResponse(
             transfer.Id,
@@ -56,7 +60,9 @@ public sealed class GetTransferQueryHandler(AppDbContext dbContext)
             transfer.FinishedAt,
             transfer.CancelledAt,
             transfer.FailureCode,
-            auditTrail));
+            auditTrail,
+            dispatchState?.LastProcessingError,
+            dispatchState?.DeadLetteredAt is not null));
     }
 
     private static string TransferActionName(AuditActionType actionType) => actionType switch

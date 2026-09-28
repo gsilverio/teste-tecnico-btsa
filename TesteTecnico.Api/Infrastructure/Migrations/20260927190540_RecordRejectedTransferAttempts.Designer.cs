@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using TesteTecnico.Api.Domain.Accounts;
@@ -14,9 +15,11 @@ using TesteTecnico.Api.Infrastructure.Persistence;
 namespace TesteTecnico.Api.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260927190540_RecordRejectedTransferAttempts")]
+    partial class RecordRejectedTransferAttempts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -395,16 +398,6 @@ namespace TesteTecnico.Api.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTimeOffset?>("DeadLetteredAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LastProcessingError")
-                        .HasMaxLength(2048)
-                        .HasColumnType("character varying(2048)");
-
-                    b.Property<int>("ProcessingAttempts")
-                        .HasColumnType("integer");
-
                     b.Property<DateTimeOffset?>("PublishedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -418,10 +411,7 @@ namespace TesteTecnico.Api.Infrastructure.Migrations
 
                     b.HasIndex("PublishedAt", "AvailableAt");
 
-                    b.ToTable("transfer_outbox_messages", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_transfer_outbox_processing_attempts_nonnegative", "\"ProcessingAttempts\" >= 0");
-                        });
+                    b.ToTable("transfer_outbox_messages", (string)null);
                 });
 
             modelBuilder.Entity("TesteTecnico.Api.Domain.Accounts.Account", b =>

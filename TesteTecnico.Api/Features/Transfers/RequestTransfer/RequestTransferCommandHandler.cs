@@ -40,34 +40,85 @@ public sealed class RequestTransferCommandHandler(
             return Failure("account.not_found", "A conta de origem não foi encontrada.");
         }
 
+        if (!await dbContext.Accounts.AnyAsync(account => account.Id == request.SourceAccountId, cancellationToken))
+        {
+            return Failure("account.not_found", "A conta de origem não foi encontrada.");
+        }
+
+        var rejectedRequestFingerprint = normalizedKey is null ? null : CreateRejectedRequestFingerprint(request, scheduled);
+        if (normalizedKey is not null)
+        {
+            var previousRejection = await dbContext.TransferAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(attempt => attempt.SourceAccountId == request.SourceAccountId
+                    && attempt.IdempotencyKey == normalizedKey,
+                    cancellationToken);
+            if (previousRejection is not null)
+            {
+                return string.Equals(previousRejection.RequestFingerprint, rejectedRequestFingerprint, StringComparison.Ordinal)
+                    ? Failure(previousRejection.FailureCode!, previousRejection.FailureMessage!)
+                    : Failure("transfer.idempotency_conflict", "A chave de idempotência já foi usada com dados diferentes.");
+            }
+        }
+
         var methodResult = ParseMethod(request.Method);
         if (!methodResult.IsSuccess)
         {
-            return Result<TransferResponse>.Failure(methodResult.Error!);
+            return await RecordRejectedAttemptAsync(request.SourceAccountId, methodResult.Error!, normalizedKey, rejectedRequestFingerprint, cancellationToken);
         }
 
         var method = methodResult.Value;
         var destinationResult = await ResolveDestinationAsync(request, method, cancellationToken);
         if (!destinationResult.IsSuccess)
         {
-            return Result<TransferResponse>.Failure(destinationResult.Error!);
+            return await RecordRejectedAttemptAsync(request.SourceAccountId, destinationResult.Error!, normalizedKey, rejectedRequestFingerprint, cancellationToken);
         }
 
         var now = timeProvider.GetUtcNow();
         var scheduledAt = scheduled ? request.ScheduledAt : null;
         if (scheduled && scheduledAt is null)
         {
-            return Failure("transfer.invalid_schedule", "A data de execução agendada é obrigatória.");
+            return await RecordRejectedAttemptAsync(request.SourceAccountId,
+                new Error("transfer.invalid_schedule", "A data de execução agendada é obrigatória."),
+                normalizedKey, rejectedRequestFingerprint, cancellationToken);
         }
 
         if (!scheduled && request.ScheduledAt is not null)
         {
-            return Failure("transfer.invalid_schedule", "A rota de transferência imediata não aceita uma data agendada.");
+            return await RecordRejectedAttemptAsync(request.SourceAccountId,
+                new Error("transfer.invalid_schedule", "A rota de transferência imediata não aceita uma data agendada."),
+                normalizedKey, rejectedRequestFingerprint, cancellationToken);
+        }
+
+        // Validate monetary precision before comparing the persisted fingerprint.
+        // Keep the canonical two-decimal format compatible with existing valid requests.
+        var requestError = Transfer.ValidateRequest(request.SourceAccountId, destinationResult.Value, request.Amount, method);
+        if (requestError is not null)
+        {
+            return await RecordRejectedAttemptAsync(request.SourceAccountId, requestError,
+                normalizedKey, rejectedRequestFingerprint, cancellationToken);
         }
 
         var fingerprint = normalizedKey is null
             ? null
             : CreateFingerprint(request.SourceAccountId, destinationResult.Value, method, request.Amount, scheduledAt);
+
+        if (scheduled && normalizedKey is not null)
+        {
+            var existing = await dbContext.Transfers.AsNoTracking().SingleOrDefaultAsync(
+                item => item.SourceAccountId == request.SourceAccountId && item.IdempotencyKey == normalizedKey,
+                cancellationToken);
+            if (existing is not null)
+            {
+                if (!string.Equals(existing.RequestFingerprint, fingerprint, StringComparison.Ordinal))
+                {
+                    return Failure("transfer.idempotency_conflict", "A chave de idempotência já foi usada com dados diferentes.");
+                }
+
+                var persisted = await dbContext.Transfers.SingleAsync(item => item.Id == existing.Id, cancellationToken);
+                await EnsureDispatchScheduledAsync(persisted, cancellationToken);
+                return Result<TransferResponse>.Success(ToTransferResponse(existing));
+            }
+        }
 
         if (scheduled)
         {
@@ -82,7 +133,7 @@ public sealed class RequestTransferCommandHandler(
                 fingerprint);
             if (!transferResult.IsSuccess)
             {
-                return Result<TransferResponse>.Failure(transferResult.Error!);
+                return await RecordRejectedAttemptAsync(request.SourceAccountId, transferResult.Error!, normalizedKey, rejectedRequestFingerprint, cancellationToken);
             }
 
             var persistence = await PersistTransferAsync(
@@ -90,6 +141,7 @@ public sealed class RequestTransferCommandHandler(
                 request.SourceAccountId,
                 normalizedKey,
                 fingerprint,
+                rejectedRequestFingerprint,
                 now,
                 scheduledAt.Value,
                 cancellationToken);
@@ -120,7 +172,7 @@ public sealed class RequestTransferCommandHandler(
             fingerprint);
         if (!immediateTransferResult.IsSuccess)
         {
-            return Result<TransferResponse>.Failure(immediateTransferResult.Error!);
+            return await RecordRejectedAttemptAsync(request.SourceAccountId, immediateTransferResult.Error!, normalizedKey, rejectedRequestFingerprint, cancellationToken);
         }
 
         return await ExecuteImmediateTransferAsync(
@@ -131,11 +183,64 @@ public sealed class RequestTransferCommandHandler(
             cancellationToken);
     }
 
+    private async Task<Result<TransferResponse>> RecordRejectedAttemptAsync(
+        Guid sourceAccountId,
+        Error error,
+        string? idempotencyKey,
+        string? fingerprint,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        var lockedSource = await dbContext.Accounts.FromSqlInterpolated(
+                $"SELECT * FROM \"accounts\" WHERE \"Id\" = {sourceAccountId} FOR UPDATE")
+            .ToListAsync(cancellationToken);
+        if (lockedSource.Count == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return Failure("account.not_found", "A conta de origem não foi encontrada.");
+        }
+
+        if (idempotencyKey is not null)
+        {
+            if (await dbContext.Transfers.AsNoTracking().AnyAsync(
+                    transfer => transfer.SourceAccountId == sourceAccountId && transfer.IdempotencyKey == idempotencyKey,
+                    cancellationToken))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Failure("transfer.idempotency_conflict", "A chave de idempotência já foi usada com dados diferentes.");
+            }
+
+            var existing = await dbContext.TransferAttempts.SingleOrDefaultAsync(
+                attempt => attempt.SourceAccountId == sourceAccountId && attempt.IdempotencyKey == idempotencyKey,
+                cancellationToken);
+            if (existing is not null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return string.Equals(existing.RequestFingerprint, fingerprint, StringComparison.Ordinal)
+                    ? Failure(existing.FailureCode!, existing.FailureMessage!)
+                    : Failure("transfer.idempotency_conflict", "A chave de idempotência já foi usada com dados diferentes.");
+            }
+        }
+
+        dbContext.TransferAttempts.Add(TransferAttempt.CreateRejected(
+            sourceAccountId,
+            timeProvider.GetUtcNow(),
+            error.Code,
+            error.Message,
+            idempotencyKey,
+            fingerprint));
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        TransferMetrics.RecordOutcome("validation_rejected");
+        return Result<TransferResponse>.Failure(error);
+    }
+
     private async Task<Result<Transfer>> PersistTransferAsync(
         Transfer transfer,
         Guid sourceAccountId,
         string? normalizedKey,
         string? fingerprint,
+        string? rejectedFingerprint,
         DateTimeOffset now,
         DateTimeOffset availableAt,
         CancellationToken cancellationToken)
@@ -147,6 +252,7 @@ public sealed class RequestTransferCommandHandler(
                 sourceAccountId,
                 normalizedKey,
                 fingerprint,
+                rejectedFingerprint,
                 now,
                 availableAt,
                 cancellationToken);
@@ -175,11 +281,13 @@ public sealed class RequestTransferCommandHandler(
         Guid sourceAccountId,
         string? normalizedKey,
         string? fingerprint,
+        string? rejectedFingerprint,
         DateTimeOffset now,
         DateTimeOffset availableAt,
         CancellationToken cancellationToken)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await transferExecutor.LockAccountsAsync(transfer.SourceAccountId, transfer.DestinationAccountId, cancellationToken);
         var existing = normalizedKey is null
             ? null
             : await dbContext.Transfers.SingleOrDefaultAsync(
@@ -191,6 +299,21 @@ public sealed class RequestTransferCommandHandler(
             await transaction.RollbackAsync(cancellationToken);
             return string.Equals(existing.RequestFingerprint, fingerprint, StringComparison.Ordinal)
                 ? Result<Transfer>.Success(existing)
+                : Result<Transfer>.Failure(new Error(
+                    "transfer.idempotency_conflict",
+                    "A chave de idempotência já foi usada com dados diferentes."));
+        }
+
+        var previousRejection = normalizedKey is null
+            ? null
+            : await dbContext.TransferAttempts.SingleOrDefaultAsync(
+                attempt => attempt.SourceAccountId == sourceAccountId && attempt.IdempotencyKey == normalizedKey,
+                cancellationToken);
+        if (previousRejection is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return string.Equals(previousRejection.RequestFingerprint, rejectedFingerprint, StringComparison.Ordinal)
+                ? Result<Transfer>.Failure(new Error(previousRejection.FailureCode!, previousRejection.FailureMessage!))
                 : Result<Transfer>.Failure(new Error(
                     "transfer.idempotency_conflict",
                     "A chave de idempotência já foi usada com dados diferentes."));
@@ -247,6 +370,16 @@ public sealed class RequestTransferCommandHandler(
         CancellationToken cancellationToken)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await transferExecutor.LockAccountsAsync(transfer.SourceAccountId, transfer.DestinationAccountId, cancellationToken);
+        if (transfer.IdempotencyKey is not null && await dbContext.TransferAttempts.AsNoTracking().AnyAsync(
+                attempt => attempt.SourceAccountId == transfer.SourceAccountId
+                    && attempt.IdempotencyKey == transfer.IdempotencyKey,
+                cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return Failure("transfer.idempotency_conflict", "A chave de idempotência já foi usada com dados diferentes.");
+        }
+
         dbContext.Transfers.Add(transfer);
         await dbContext.SaveChangesAsync(cancellationToken);
 
@@ -256,6 +389,8 @@ public sealed class RequestTransferCommandHandler(
         var finalTransfer = await dbContext.Transfers.AsNoTracking()
             .SingleAsync(item => item.Id == transfer.Id, CancellationToken.None);
         await transaction.CommitAsync(CancellationToken.None);
+
+        TransferMetrics.RecordOutcome(finalTransfer.Status == TransferStatus.Completed ? "completed" : "business_rejected");
 
         logger.LogInformation(
             "Immediate transfer {TransferId} completed synchronously with status {TransferStatus}",
@@ -432,6 +567,22 @@ public sealed class RequestTransferCommandHandler(
             method.ToString(),
             amount.ToString("0.00", CultureInfo.InvariantCulture),
             scheduledAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? string.Empty);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(requestData))).ToLowerInvariant();
+    }
+
+    private static string CreateRejectedRequestFingerprint(TransferRequest request, bool scheduled)
+    {
+        var requestData = string.Join('|',
+            request.SourceAccountId.ToString("D"),
+            scheduled,
+            request.Method?.Trim(),
+            request.Amount.ToString("G29", CultureInfo.InvariantCulture),
+            request.PixKey?.Trim().ToUpperInvariant(),
+            request.BankIspb?.Trim(),
+            request.Branch?.Trim(),
+            request.AccountNumber?.Trim(),
+            request.CheckDigit?.Trim(),
+            request.ScheduledAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(requestData))).ToLowerInvariant();
     }
 

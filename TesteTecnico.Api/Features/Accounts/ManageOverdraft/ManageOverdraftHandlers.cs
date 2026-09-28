@@ -29,7 +29,10 @@ public sealed class SetOverdraftLimitCommandHandler(
     /// <summary>Define o limite, validando que ele não fique abaixo do valor já utilizado.</summary>
     public async Task<Result<OverdraftLimitResponse>> HandleAsync(Guid accountId, decimal limit, CancellationToken cancellationToken)
     {
-        var account = await dbContext.Accounts.SingleOrDefaultAsync(account => account.Id == accountId, cancellationToken);
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        var account = await dbContext.Accounts
+            .FromSqlInterpolated($"SELECT * FROM \"accounts\" WHERE \"Id\" = {accountId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
         if (account is null)
         {
             return Result<OverdraftLimitResponse>.Failure(new Error("account.not_found", "A conta informada não foi encontrada."));
@@ -42,6 +45,7 @@ public sealed class SetOverdraftLimitCommandHandler(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         logger.LogInformation("Updated overdraft limit for account {AccountId}", account.Id);
         return Result<OverdraftLimitResponse>.Success(new OverdraftLimitResponse(account.Id, account.Balance, account.OverdraftLimit));
     }

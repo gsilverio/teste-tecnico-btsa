@@ -114,6 +114,7 @@ export function TransferDetailsPage({ transferId, onBack, onNavigate }: Transfer
 
               {actionError && <div className="form-error" role="alert">{actionError}</div>}
               {error && <div className="form-error detail-refresh-error" role="status">Atualização automática indisponível: {error}</div>}
+              {transfer.processingError && <div className="state-card state-error" role="status"><span className="state-icon"><Icon name="warning" /></span><div><strong>{transfer.isInDeadLetter ? 'Processamento técnico precisa de intervenção' : 'Falha técnica no processamento'}</strong><p>{transfer.processingError}</p><small>Consulte a fila transfers.processing.dead-letter no RabbitMQ Management. Após corrigir a causa, reencaminhe a mensagem para transfers.processing.</small></div></div>}
 
               <div className="detail-content-grid">
                 <section className="transfer-detail-card">
